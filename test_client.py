@@ -84,15 +84,69 @@ def handle_outliers_test(file_id, strategy):
             print(f'  {col}: {info}')
 
 
+def normalize_test(file_id, method, feature_range=(0, 1)):
+    step(f'6. 数据归一化 (方法: {method})')
+    body = {'method': method}
+    if method == 'minmax':
+        body['feature_range'] = list(feature_range)
+    resp = requests.post(
+        f'{BASE_URL}/api/normalize/{file_id}',
+        json=body
+    )
+    data = resp.json()
+    print(f'状态码: {resp.status_code}')
+    print(f'归一化方法: {data["method"]}')
+    print(f'归一化列数: {data["normalized_columns"]}')
+    if data.get('feature_range'):
+        print(f'目标范围: {data["feature_range"]}')
+    print('\n归一化详情:')
+    for col, info in data['report'].items():
+        print(f'  {col}:')
+        if info['method'] == 'minmax':
+            print(f'    原始范围: [{info["original_min"]}, {info["original_max"]}]')
+            print(f'    归一化后范围: [{info["normalized_min"]}, {info["normalized_max"]}]')
+        elif info['method'] == 'zscore':
+            print(f'    原始均值={info["mean"]:.4f}, 标准差={info["std"]:.4f}')
+            print(f'    归一化后均值={info["normalized_mean"]:.4f}, 标准差={info["normalized_std"]:.4f}')
+    print(f'\n输出文件: {data["output_file"]}')
+    print(f'下载链接: {data["download_url"]}')
+
+
+def normalize_methods_comparison():
+    step('6.3 归一化方法对比说明')
+    print('''
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║  Min-Max 归一化 vs Z-Score 标准化                            ║
+    ╠═══════════════════════════════════════════════════════════════╣
+    ║  Min-Max 归一化 (离差标准化):                                 ║
+    ║    x' = (x - min) / (max - min) * (max_new - min_new) + min_new ║
+    ║    - 将数据缩放到指定范围 (默认 [0,1])                        ║
+    ║    - 适用于已知上下界、不要求正态分布的场景                    ║
+    ║    - 对异常值敏感，建议先处理异常值再使用                      ║
+    ║    - 适用于图像像素值、评分等场景                              ║
+    ║                                                              ║
+    ║  Z-Score 标准化 (标准差标准化):                               ║
+    ║    x' = (x - μ) / σ                                          ║
+    ║    - 转化为均值为0、标准差为1的标准正态分布                    ║
+    ║    - 适用于要求数据符合正态分布的算法 (SVM, LR, PCA 等)       ║
+    ║    - 受异常值影响比 Min-Max 小，但仍建议先处理异常值            ║
+    ║    - 无固定范围，保留相对距离信息                              ║
+    ╚═══════════════════════════════════════════════════════════════╝
+    ''')
+
+
 def clean_pipeline(file_id, strategy='mean'):
-    step(f'6. 一键清洗流水线 (含 IQR 异常值处理)')
+    step(f'7. 一键清洗流水线 (含 IQR 异常值 + 归一化)')
     resp = requests.post(
         f'{BASE_URL}/api/clean/{file_id}',
         json={
             'strategy': strategy,
             'handle_outliers': True,
             'outlier_strategy': 'cap',
-            'outlier_k': 1.5
+            'outlier_k': 1.5,
+            'normalize': True,
+            'normalize_method': 'minmax',
+            'normalize_range': [0, 1]
         }
     )
     data = resp.json()
@@ -106,12 +160,25 @@ def clean_pipeline(file_id, strategy='mean'):
         print(f'  异常值数量: {data["outliers"]["total_outliers_before"]} → {data["outliers"]["total_outliers_after"]}')
         print(f'  策略: {data["outliers"]["strategy"]}')
 
+    if 'normalization' in data:
+        norm = data['normalization']
+        print(f'\n数据归一化 (方法: {norm["method"]}):')
+        print(f'  归一化列数: {norm["normalized_columns"]}')
+        if norm.get('feature_range'):
+            print(f'  目标范围: {norm["feature_range"]}')
+        print('  各列归一化结果:')
+        for col, info in norm['report'].items():
+            if info['method'] == 'minmax':
+                print(f'    {col}: [{info["original_min"]}, {info["original_max"]}] → [{info["normalized_min"]:.4f}, {info["normalized_max"]:.4f}]')
+            elif info['method'] == 'zscore':
+                print(f'    {col}: μ={info["mean"]:.2f}, σ={info["std"]:.2f} → μ\'={info["normalized_mean"]:.4f}, σ\'={info["normalized_std"]:.4f}')
+
     print(f'\n输出文件: {data["output_file"]}')
     print(f'下载链接: {data["download_url"]}')
 
 
 def compare_3sigma_vs_iqr(file_id):
-    step('7. 验证: 为什么 IQR 比 3σ 更鲁棒 (非正态分布场景)')
+    step(f'8. 验证: 为什么 IQR 比 3σ 更鲁棒 (非正态分布场景)')
     print('''
     ╔═══════════════════════════════════════════════════════════════╗
     ║  IQR 方法 vs 3σ 方法对比                                      ║
@@ -142,6 +209,10 @@ if __name__ == '__main__':
         detect_outliers(fid)
         handle_outliers_test(fid, 'cap')
         handle_outliers_test(fid, 'median')
+        normalize_test(fid, 'minmax', (0, 1))
+        normalize_test(fid, 'minmax', (-1, 1))
+        normalize_test(fid, 'zscore')
+        normalize_methods_comparison()
         clean_pipeline(fid, 'mean')
         compare_3sigma_vs_iqr(fid)
         print('\n所有测试执行完成!')

@@ -1,0 +1,14 @@
+﻿name,age,salary,department,city
+Alice,0.445,0.5357142857142857,Engineering,New York
+Bob,0.345,0.32142857142857145,Marketing,Los Angeles
+Charlie,0.5004545454545455,0.6071428571428571,Engineering,Austin
+David,0.545,0.5035714285714286,Sales,Chicago
+Eve,0.405,0.39285714285714285,Engineering,Boston
+Frank,0.5004545454545455,0.4928571428571429,Marketing,Austin
+Grace,0.485,0.4357142857142857,Engineering,San Francisco
+Henry,0.645,0.6785714285714286,Sales,Austin
+Ivy,0.285,0.25,Engineering,Austin
+Jack,0.745,0.75,Marketing,Seattle
+Kate,1.0,1.0,Sales,Austin
+Leo,0.0,0.0,Engineering,Detroit
+Mia,0.605,0.5785714285714286,Engineering,Denver

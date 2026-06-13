@@ -1,0 +1,14 @@
+﻿name,age,salary,department,city
+Alice,30.0,75000.0,Engineering,New York
+Bob,25.0,60000.0,Marketing,Los Angeles
+Charlie,,80000.0,Engineering,
+David,35.0,,Sales,Chicago
+Eve,28.0,65000.0,,Boston
+Frank,,72000.0,Marketing,
+Grace,32.0,68000.0,Engineering,San Francisco
+Henry,40.0,85000.0,Sales,
+Ivy,22.0,55000.0,Engineering,Austin
+Jack,45.0,90000.0,Marketing,Seattle
+Kate,200.0,500000.0,Sales,
+Leo,2.0,1000.0,Engineering,Detroit
+Mia,38.0,78000.0,,Denver

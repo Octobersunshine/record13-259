@@ -253,6 +253,93 @@ def handle_outliers(df, k=1.5, strategy='cap'):
     }
 
 
+def normalize_data(df, method='minmax', feature_range=(0, 1), columns=None):
+    df_normalized = df.copy()
+    norm_report = {}
+    numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col].dtype)]
+
+    if columns is not None:
+        numeric_cols = [col for col in numeric_cols if col in columns]
+
+    if not numeric_cols:
+        return {
+            'dataframe': df_normalized,
+            'method': method,
+            'normalized_columns': 0,
+            'report': {},
+            'note': 'no numeric columns to normalize'
+        }
+
+    if method == 'minmax':
+        min_val, max_val = feature_range
+        for col in numeric_cols:
+            col_min = float(df[col].min())
+            col_max = float(df[col].max())
+
+            if col_max - col_min == 0:
+                df_normalized[col] = min_val
+                norm_report[col] = {
+                    'method': 'minmax',
+                    'original_min': col_min,
+                    'original_max': col_max,
+                    'target_min': min_val,
+                    'target_max': max_val,
+                    'note': 'constant column, all values set to target min'
+                }
+                continue
+
+            df_normalized[col] = (df[col] - col_min) / (col_max - col_min) * (max_val - min_val) + min_val
+            norm_report[col] = {
+                'method': 'minmax',
+                'original_min': col_min,
+                'original_max': col_max,
+                'target_min': min_val,
+                'target_max': max_val,
+                'normalized_min': float(df_normalized[col].min()),
+                'normalized_max': float(df_normalized[col].max())
+            }
+
+    elif method == 'zscore':
+        for col in numeric_cols:
+            col_mean = float(df[col].mean())
+            col_std = float(df[col].std())
+
+            if col_std == 0:
+                df_normalized[col] = 0.0
+                norm_report[col] = {
+                    'method': 'zscore',
+                    'mean': col_mean,
+                    'std': col_std,
+                    'note': 'zero std, all values set to 0'
+                }
+                continue
+
+            df_normalized[col] = (df[col] - col_mean) / col_std
+            norm_report[col] = {
+                'method': 'zscore',
+                'mean': col_mean,
+                'std': col_std,
+                'normalized_mean': float(df_normalized[col].mean()),
+                'normalized_std': float(df_normalized[col].std())
+            }
+
+    else:
+        return {
+            'dataframe': df_normalized,
+            'method': method,
+            'normalized_columns': 0,
+            'report': {},
+            'error': f'unknown method: {method}'
+        }
+
+    return {
+        'dataframe': df_normalized,
+        'method': method,
+        'normalized_columns': len(numeric_cols),
+        'report': norm_report
+    }
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
@@ -394,6 +481,40 @@ def api_handle_outliers(file_id):
     })
 
 
+@app.route('/api/normalize/<file_id>', methods=['POST'])
+def api_normalize(file_id):
+    filepath = _find_file(file_id)
+    if filepath is None:
+        return jsonify({'error': 'File not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    method = data.get('method', 'minmax')
+    feature_range = tuple(data.get('feature_range', [0, 1]))
+    columns = data.get('columns', None)
+
+    if method not in ('minmax', 'zscore'):
+        return jsonify({'error': 'Invalid method. Must be "minmax" or "zscore"'}), 400
+
+    df = load_csv(filepath)
+    result = normalize_data(df, method=method, feature_range=feature_range, columns=columns)
+
+    if 'error' in result:
+        return jsonify({'error': result['error']}), 400
+
+    output_name = f"{file_id}_normalized_{method}.csv"
+    output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
+    save_csv(result['dataframe'], output_path)
+
+    return jsonify({
+        'method': method,
+        'normalized_columns': result['normalized_columns'],
+        'feature_range': list(feature_range) if method == 'minmax' else None,
+        'report': result['report'],
+        'output_file': output_name,
+        'download_url': f'/api/download/{output_name}'
+    })
+
+
 @app.route('/api/clean/<file_id>', methods=['POST'])
 def clean_pipeline(file_id):
     filepath = _find_file(file_id)
@@ -405,9 +526,16 @@ def clean_pipeline(file_id):
     handle_outliers_flag = data.get('handle_outliers', True)
     outlier_strategy = data.get('outlier_strategy', 'cap')
     outlier_k = float(data.get('outlier_k', 1.5))
+    normalize_flag = data.get('normalize', False)
+    normalize_method = data.get('normalize_method', 'minmax')
+    normalize_range = tuple(data.get('normalize_range', [0, 1]))
+    normalize_columns = data.get('normalize_columns', None)
 
     if strategy not in ('mean', 'median'):
         return jsonify({'error': 'Invalid strategy. Must be "mean" or "median"'}), 400
+
+    if normalize_flag and normalize_method not in ('minmax', 'zscore'):
+        return jsonify({'error': 'Invalid normalize_method. Must be "minmax" or "zscore"'}), 400
 
     df = load_csv(filepath)
 
@@ -425,10 +553,25 @@ def clean_pipeline(file_id):
     fill_result = fill_missing(df, strategy=strategy)
     df = fill_result['dataframe']
 
+    normalize_result = None
+    if normalize_flag:
+        normalize_result = normalize_data(
+            df,
+            method=normalize_method,
+            feature_range=normalize_range,
+            columns=normalize_columns
+        )
+        if 'error' in normalize_result:
+            return jsonify({'error': normalize_result['error']}), 400
+        df = normalize_result['dataframe']
+
     missing_stats_after = get_missing_stats(df)
     outliers_after = detect_outliers_iqr(df, k=outlier_k) if handle_outliers_flag else None
 
-    output_name = f"{file_id}_cleaned_{strategy}.csv"
+    output_suffix = f"{strategy}"
+    if normalize_flag:
+        output_suffix += f"_norm_{normalize_method}"
+    output_name = f"{file_id}_cleaned_{output_suffix}.csv"
     output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
     save_csv(df, output_path)
 
@@ -450,6 +593,14 @@ def clean_pipeline(file_id):
             'total_outliers_before': outliers_before['summary']['total_outlier_cells'],
             'total_outliers_after': outliers_after['summary']['total_outlier_cells'],
             'handle_report': outlier_result['handle_report'] if outlier_result else {}
+        }
+
+    if normalize_flag:
+        response['normalization'] = {
+            'method': normalize_method,
+            'normalized_columns': normalize_result['normalized_columns'],
+            'feature_range': list(normalize_range) if normalize_method == 'minmax' else None,
+            'report': normalize_result['report']
         }
 
     return jsonify(response)
