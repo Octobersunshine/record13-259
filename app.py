@@ -113,6 +113,146 @@ def fill_missing(df, strategy='mean'):
     }
 
 
+def detect_outliers_iqr(df, k=1.5):
+    outlier_report = {}
+    total_outliers = 0
+    numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col].dtype)]
+
+    for col in numeric_cols:
+        series = df[col].dropna()
+        if len(series) == 0:
+            outlier_report[col] = {
+                'outlier_count': 0,
+                'outlier_percentage': 0.0,
+                'q1': None,
+                'q3': None,
+                'iqr': None,
+                'lower_bound': None,
+                'upper_bound': None,
+                'method': 'iqr',
+                'note': 'no valid numeric values'
+            }
+            continue
+
+        q1 = float(series.quantile(0.25))
+        q3 = float(series.quantile(0.75))
+        iqr = q3 - q1
+        lower_bound = q1 - k * iqr
+        upper_bound = q3 + k * iqr
+
+        outlier_mask = (df[col] < lower_bound) | (df[col] > upper_bound)
+        outlier_count = int(outlier_mask.sum())
+        outlier_pct = round(outlier_count / len(df) * 100, 2) if len(df) > 0 else 0.0
+        total_outliers += outlier_count
+
+        outlier_values = df.loc[outlier_mask, col].tolist()
+
+        outlier_report[col] = {
+            'outlier_count': outlier_count,
+            'outlier_percentage': outlier_pct,
+            'q1': q1,
+            'q3': q3,
+            'iqr': iqr,
+            'lower_bound': lower_bound,
+            'upper_bound': upper_bound,
+            'method': 'iqr',
+            'k_factor': k,
+            'outlier_values': [float(v) for v in outlier_values if pd.notnull(v)]
+        }
+
+    non_numeric_cols = [col for col in df.columns if not pd.api.types.is_numeric_dtype(df[col].dtype)]
+    for col in non_numeric_cols:
+        outlier_report[col] = {
+            'outlier_count': 0,
+            'outlier_percentage': 0.0,
+            'method': 'skipped',
+            'note': 'non-numeric column'
+        }
+
+    return {
+        'summary': {
+            'total_rows': len(df),
+            'numeric_columns': len(numeric_cols),
+            'total_outlier_cells': total_outliers,
+            'method': 'iqr',
+            'k_factor': k
+        },
+        'by_column': outlier_report
+    }
+
+
+def handle_outliers(df, k=1.5, strategy='cap'):
+    df_cleaned = df.copy()
+    handle_report = {}
+    total_handled = 0
+    numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col].dtype)]
+
+    for col in numeric_cols:
+        series = df[col].dropna()
+        if len(series) == 0:
+            handle_report[col] = {'handled': 0, 'method': 'skipped', 'note': 'no valid numeric values'}
+            continue
+
+        q1 = float(series.quantile(0.25))
+        q3 = float(series.quantile(0.75))
+        iqr = q3 - q1
+        lower_bound = q1 - k * iqr
+        upper_bound = q3 + k * iqr
+
+        outlier_mask = (df_cleaned[col] < lower_bound) | (df_cleaned[col] > upper_bound)
+        outlier_count = int(outlier_mask.sum())
+
+        if outlier_count == 0:
+            handle_report[col] = {'handled': 0, 'method': 'none', 'lower_bound': lower_bound, 'upper_bound': upper_bound}
+            continue
+
+        if strategy == 'cap':
+            df_cleaned.loc[df_cleaned[col] < lower_bound, col] = lower_bound
+            df_cleaned.loc[df_cleaned[col] > upper_bound, col] = upper_bound
+            handle_report[col] = {
+                'handled': outlier_count,
+                'method': 'cap',
+                'lower_bound': lower_bound,
+                'upper_bound': upper_bound,
+                'note': 'values capped at IQR bounds'
+            }
+        elif strategy == 'remove':
+            df_cleaned = df_cleaned[~outlier_mask].reset_index(drop=True)
+            handle_report[col] = {
+                'handled': outlier_count,
+                'method': 'remove',
+                'lower_bound': lower_bound,
+                'upper_bound': upper_bound,
+                'note': 'rows with outliers removed'
+            }
+        elif strategy == 'median':
+            median_val = float(series.median())
+            df_cleaned.loc[outlier_mask, col] = median_val
+            handle_report[col] = {
+                'handled': outlier_count,
+                'method': 'median',
+                'lower_bound': lower_bound,
+                'upper_bound': upper_bound,
+                'replacement_value': median_val
+            }
+        else:
+            handle_report[col] = {'handled': 0, 'method': 'skipped', 'reason': f'unknown strategy: {strategy}'}
+            continue
+
+        total_handled += outlier_count
+
+    non_numeric_cols = [col for col in df.columns if not pd.api.types.is_numeric_dtype(df[col].dtype)]
+    for col in non_numeric_cols:
+        handle_report[col] = {'handled': 0, 'method': 'skipped', 'note': 'non-numeric column'}
+
+    return {
+        'dataframe': df_cleaned,
+        'handle_report': handle_report,
+        'total_handled': total_handled,
+        'rows_after': len(df_cleaned)
+    }
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
@@ -209,6 +349,51 @@ def api_fill_missing(file_id):
     })
 
 
+@app.route('/api/detect-outliers/<file_id>', methods=['GET'])
+def api_detect_outliers(file_id):
+    filepath = _find_file(file_id)
+    if filepath is None:
+        return jsonify({'error': 'File not found'}), 404
+
+    k = float(request.args.get('k', 1.5))
+
+    df = load_csv(filepath)
+    result = detect_outliers_iqr(df, k=k)
+    return jsonify(result)
+
+
+@app.route('/api/handle-outliers/<file_id>', methods=['POST'])
+def api_handle_outliers(file_id):
+    filepath = _find_file(file_id)
+    if filepath is None:
+        return jsonify({'error': 'File not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    k = float(data.get('k', 1.5))
+    strategy = data.get('strategy', 'cap')
+
+    if strategy not in ('cap', 'remove', 'median'):
+        return jsonify({'error': 'Invalid strategy. Must be "cap", "remove", or "median"'}), 400
+
+    df = load_csv(filepath)
+    result = handle_outliers(df, k=k, strategy=strategy)
+
+    output_name = f"{file_id}_outliers_{strategy}.csv"
+    output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
+    save_csv(result['dataframe'], output_path)
+
+    return jsonify({
+        'method': 'iqr',
+        'k_factor': k,
+        'strategy': strategy,
+        'total_handled': result['total_handled'],
+        'rows_after': result['rows_after'],
+        'handle_report': result['handle_report'],
+        'output_file': output_name,
+        'download_url': f'/api/download/{output_name}'
+    })
+
+
 @app.route('/api/clean/<file_id>', methods=['POST'])
 def clean_pipeline(file_id):
     filepath = _find_file(file_id)
@@ -217,6 +402,9 @@ def clean_pipeline(file_id):
 
     data = request.get_json(silent=True) or {}
     strategy = data.get('strategy', 'mean')
+    handle_outliers_flag = data.get('handle_outliers', True)
+    outlier_strategy = data.get('outlier_strategy', 'cap')
+    outlier_k = float(data.get('outlier_k', 1.5))
 
     if strategy not in ('mean', 'median'):
         return jsonify({'error': 'Invalid strategy. Must be "mean" or "median"'}), 400
@@ -224,20 +412,27 @@ def clean_pipeline(file_id):
     df = load_csv(filepath)
 
     missing_stats_before = get_missing_stats(df)
+    outliers_before = detect_outliers_iqr(df, k=outlier_k) if handle_outliers_flag else None
 
     dedup_result = drop_duplicates(df)
     df = dedup_result['dataframe']
+
+    outlier_result = None
+    if handle_outliers_flag:
+        outlier_result = handle_outliers(df, k=outlier_k, strategy=outlier_strategy)
+        df = outlier_result['dataframe']
 
     fill_result = fill_missing(df, strategy=strategy)
     df = fill_result['dataframe']
 
     missing_stats_after = get_missing_stats(df)
+    outliers_after = detect_outliers_iqr(df, k=outlier_k) if handle_outliers_flag else None
 
     output_name = f"{file_id}_cleaned_{strategy}.csv"
     output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_name)
     save_csv(df, output_path)
 
-    return jsonify({
+    response = {
         'strategy': strategy,
         'duplicates_removed': dedup_result['duplicates_removed'],
         'missing_before': missing_stats_before['summary'],
@@ -245,7 +440,19 @@ def clean_pipeline(file_id):
         'fill_report': fill_result['fill_report'],
         'output_file': output_name,
         'download_url': f'/api/download/{output_name}'
-    })
+    }
+
+    if handle_outliers_flag:
+        response['outliers'] = {
+            'method': 'iqr',
+            'k_factor': outlier_k,
+            'strategy': outlier_strategy,
+            'total_outliers_before': outliers_before['summary']['total_outlier_cells'],
+            'total_outliers_after': outliers_after['summary']['total_outlier_cells'],
+            'handle_report': outlier_result['handle_report'] if outlier_result else {}
+        }
+
+    return jsonify(response)
 
 
 @app.route('/api/download/<filename>', methods=['GET'])
