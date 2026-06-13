@@ -1,0 +1,11 @@
+﻿name,age,salary,department,city
+Alice,30.0,75000.0,Engineering,New York
+Bob,25.0,60000.0,Marketing,Los Angeles
+Charlie,30.625,80000.0,Engineering,Los Angeles
+Alice,30.0,75000.0,Engineering,New York
+David,35.0,71111.11111111111,Sales,Chicago
+Eve,28.0,65000.0,Engineering,Boston
+Frank,30.625,72000.0,Marketing,Los Angeles
+Grace,32.0,68000.0,Engineering,San Francisco
+Bob,25.0,60000.0,Marketing,Los Angeles
+Henry,40.0,85000.0,Sales,Los Angeles
